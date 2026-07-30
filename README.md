@@ -9,6 +9,30 @@
 
 Please have your full name, how to pronounce, and photo in Zoom and Slack. 
 
+## Jupyter notebook setup
+
+From the repository root, create and activate a Python virtual environment, then
+install the course dependencies:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m ipykernel install --user --name ds-summer-prep --display-name "Python (ds-summer-prep)"
+```
+
+Start JupyterLab with:
+
+```bash
+jupyter lab
+```
+
+When opening a notebook, select the **Python (ds-summer-prep)** kernel. In VS
+Code or Codespaces, select that same kernel from the notebook's kernel picker.
+Run these commands once per machine (or once per Codespace rebuild). The virtual
+environment and Jupyter checkpoint folders are intentionally ignored by Git.
+
 ## Schedule / Topics
 * Week 01: Thursday 23rd - Setup && How to Succeed
 * Week 02: Thursday 30th - Python Basics, Github, and IDE Ninja Skillz
