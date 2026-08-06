@@ -33,7 +33,7 @@ Why branch instead of just committing to your fork's `main`? Same idea, one leve
 Your fork already exists from an earlier week, so today's steps are:
 
 ![Sync your fork](data/sync-fork.png)
-![Press Sync](data/sync-button.png)
+![Press Sync](data/Sync-button.png)
 
 1. **Sync your fork's `main`.** The class repo has moved on since you forked it (merged PRs, new files). On GitHub: your fork → `main` → **Sync fork**. Now your fork matches upstream.
 
