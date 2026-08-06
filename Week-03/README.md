@@ -44,10 +44,10 @@ Your fork already exists from an earlier week, so today's steps are:
 
 4. In the terminal, run `git status` to confirm where you are, then `git checkout week{x}` to move onto your branch.
 
-5. **Don't edit the exercise file directly.** Copy it into `homeworks/`, rename it with your initials (example: `HM_week3_hw.ipynb`), and work on the copy.
-6. Stage **only your file**: `git add homeworks/HM_week3_hw.ipynb` — not `git add .` (This is the single biggest avoidable cause of merge conflicts).
+5. **Don't edit the exercise file directly.** Copy it into `homeworks/`, rename it with your initials (example: `HM_Week_3_HW.ipynb`), and work on the copy.
+6. Stage **only your file**: `git add homeworks/HM_Week_3_HW.ipynb` — not `git add .` (This is the single biggest avoidable cause of merge conflicts).
 7. Commit the added file with a message: `git commit -m "completed week 3 hw"`
-8. `git push` — this sends your branch to *your fork*, not the class repo.
+8. `git push`. First push on a brand-new branch prompts you to set an upstream — accept it, or run `git push --set-upstream origin week{x}`. Either way, this goes to *your fork*, not the class repo.
 
 **Note:** You could also complete all these steps using the GUI instead, same result, less terminal wizardry.
 
@@ -57,12 +57,23 @@ This is the step that actually submits your work.
 
 A pull request (PR) is a proposal: "take the commits on my branch and merge them into the upstream repo." Opening one shows a diff — an exact, line-by-line view of what you're proposing to add.
 
-Why we do it this way instead of pushing straight to `main`:
+1. **Open the PR.** After you push, GitHub shows a "Compare & pull request" banner on your fork — click it. Don't see it? Go to your fork → **Pull requests** → **New pull request**.
+
+![Open Pull Request](data/open-PR.png)
+
+2. **Check the direction.** Base should be the upstream repo's `main`; compare should be your `week{x}` branch. You're proposing to merge your branch into the class repo, not the other way around.
+
+![PR Compare](data/PR-compare.png)
+
+3. **Review the diff**, add a short description if you want (what you did, anything you're unsure about), then **Create pull request**.
+
+
+Why we do it this way instead of pushing straight to `main` ?
 
 - **It's how real teams work.** Nobody with production access pushes straight to `main` at a real job — everything goes through a PR and a review first. This is that habit, early.
-
 - **It's a checkpoint.** A PR is a moment where something (a person, a CI check) looks at your change before it lands anywhere permanent.
 - **It's literally how you submit.** For us, the PR *is* the handoff — it's what gets graded.
 
-Common mistakes: pushing or merging into your own `main` (leave it untouched, always branch off it), staging everything instead of just your file, and opening a PR the wrong direction — double-check it's comparing *your branch* → *upstream `main`*.
+![PR List](data/PR-list.png)
 
+___
