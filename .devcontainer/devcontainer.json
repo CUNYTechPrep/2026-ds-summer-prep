@@ -1,0 +1,17 @@
+{
+  "name": "Data Science Dev Environment",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+
+  "features": {},
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-toolsai.jupyter"
+      ]
+    }
+  },
+
+  "postCreateCommand": "pip install numpy pandas matplotlib notebook ipykernel"
+}
