@@ -1,0 +1,390 @@
+# =============================================================================
+# Auto-review homework PRs
+#
+# Runs 4 checks against homework PRs:
+#
+#   1. No merge conflict with main                    -> fail label: bug
+#   2. Exactly one homework file, correctly named      -> fail label: duplicate
+#   3. No other files touched                          -> fail label: invalid
+#   4. Homework notebook actually filled in            -> fail label: question
+#
+# All 4 pass  -> the PR is merged automatically.
+# Any fail    -> the matching label(s) are applied, and (only for labels that
+#                are NEWLY applying, not ones already sitting there from a
+#                previous run) a "Request changes" review is left explaining
+#                why. If a previously-failing check starts passing, its label
+#                is removed on the next run.
+#
+# Naming conventions accepted (two eras, both currently in use). Submissions
+# always go in homeworks/, only the template's location differs:
+#   old:  homeworks/{initials OR Firstname_Lastname}_Week_{N}_HW.ipynb
+#         template: homeworks/DONT_EDIT_MAKE_COPY_Week_{N}_HW.ipynb
+#   new:  homeworks/{initials OR Firstname_Lastname}_week_{NN}_exercise.ipynb
+#         template: Week-{NN}/DONT_EDIT_MAKE_COPY_week_{NN}_exercise.ipynb
+# A trailing "copy" (as "_copy" or " copy", however Jupyter/the OS happened to
+# name the duplicate) is tolerated in either era, harmless, doesn't create
+# any ambiguity about which file or week it is.
+#
+# SCOPE: only ever acts on PRs from an actual fork (students, who don't have
+# write access to this repo). A PR whose branch lives in this same repo --
+# instructors/collaborators pushing a dev branch, or any other same-repo PR --
+# is left completely untouched, no matter what it changes or whether it's
+# conflicted. This bot has no opinion about course content development.
+#
+# TRIGGERS -- two, doing different jobs:
+#   - pull_request_target (opened/synchronize/reopened): reacts instantly when
+#     a PR is opened or a student pushes a fix. PRs come from forks, and a
+#     plain `pull_request` trigger only gets a read-only token for those, so
+#     this is the trigger that actually gets write access. That's normally
+#     the trigger security writeups warn about, because it's dangerous IF a
+#     workflow also checks out and runs the fork's code (npm install, pytest,
+#     jupyter nbconvert --execute, etc.) with that elevated token. This
+#     workflow never does that: it only reads file content through the API
+#     (getContent + JSON.parse, never executed) and the rest is metadata
+#     calls (mergeable state, file list, labels). No checkout step exists.
+#     Since the base repo's own copy of this file is what runs regardless of
+#     what a PR changes, a PR can't alter this workflow's own behavior either.
+#   - schedule (hourly): a backstop, not the main path. Catches PRs where
+#     `mergeable` was still computing on the last push and nothing else
+#     happened to re-trigger a check, and covers PRs that existed before this
+#     workflow did, since those never fire a pull_request_target event on
+#     their own.
+#
+# BEFORE TRUSTING THIS WITH REAL PRs: run it once by hand with "Dry run"
+# checked (Actions tab -> Auto-review homework PRs -> Run workflow). It will
+# log exactly what it *would* do for every open PR without touching a single
+# label, review, or merge. Compare that log against PRs you've already
+# triaged by hand before turning dry run off. (Dry run only applies to manual
+# runs -- once live, pull_request_target events always act for real.)
+# =============================================================================
+
+name: Auto-review homework PRs
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (log only, no labels/reviews/merges)'
+        type: boolean
+        default: false
+
+permissions:
+  pull-requests: write
+  contents: write
+  issues: write
+
+jobs:
+  check-and-merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate open PRs
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const DRY_RUN = context.payload.inputs?.dry_run === 'true';
+
+            // ---- tunables -----------------------------------------------------
+            // Two conventions currently in use, both accepted:
+            //   old: {name}_Week_N_HW.ipynb        (homeworks/, template also there)
+            //   new: {name}_week_NN_exercise.ipynb (homeworks/ or Week-NN/, template
+            //        always lives in Week-NN/ regardless of where the student put
+            //        their own copy)
+            // {name} is 2-4 letter initials OR one-or-more Firstname_Lastname-style
+            // segments. The underscore right before the week number is optional too
+            // (Week1 as well as Week_1), same reasoning as making _HW optional:
+            // harmless, doesn't create any ambiguity.
+            const NAME_RE = /^[A-Za-z]+(?:_[A-Za-z]+)*_Week_?(\d+)(_HW|_exercise)?(?:[ _]copy)?\.ipynb$/i;
+            const SUBMISSION_DIR = 'homeworks/';
+            // Matches the template regardless of era -- old and new both start with
+            // this, only the casing of "week" and what follows differs. Checked
+            // case-insensitively since the new template uses a lowercase "week".
+            const TEMPLATE_PREFIX = 'DONT_EDIT_MAKE_COPY';
+            const MERGE_METHOD = 'squash'; // 'merge' | 'squash' | 'rebase'
+
+            const OUR_LABELS = ['bug', 'duplicate', 'invalid', 'question'];
+
+            // One specific line per offending file instead of one generic
+            // message for the whole PR -- "please remove those changes" is
+            // wrong advice for someone whose real submission just has a typo
+            // in the name, they need to rename it, not delete it.
+            function explainInvalidFile(filename) {
+              const reason = classifyFile(filename);
+              if (reason === 'template') {
+                return `\`${filename}\` is the template itself, don't edit it, make your own copy instead`;
+              }
+              if (reason === 'wrong-location') {
+                return `\`${filename}\` needs to be inside \`${SUBMISSION_DIR}\`, it isn't right now`;
+              }
+              // 'bad-name' -- this now covers everything from a near-miss typo
+              // to a file that was never meant to be a submission at all
+              // (.gitignore, a lecture notebook, a scratch file), so the wording
+              // stays neutral rather than assuming they were attempting the
+              // pattern and just got it wrong.
+              return (
+                `\`${filename}\` isn't recognized as a homework submission ` +
+                `(expected something like \`EK_Week_3_HW.ipynb\` or \`EK_week_03_exercise.ipynb\`)`
+              );
+            }
+
+            // Every entry returns an array of lines, not a single string, so
+            // 'invalid' can produce one bullet per offending file while the
+            // rest just produce one.
+            const REASONS = {
+              bug: () => ['This PR has a merge conflict with `main`. Resolve it and push again.'],
+              duplicate: (names) => [
+                `This PR includes more than one homework file (${names.join(', ')}). ` +
+                  `Keep only your own Week submission.`,
+              ],
+              invalid: (names) => names.map((n) => `This PR changes ${explainInvalidFile(n)}.`),
+              question: (subReason) => [
+                subReason === 'template-missing'
+                  ? "Couldn't find a template matching the week number in your filename -- " +
+                    'double check you have the right week number.'
+                  : "This still matches the blank template, looks like the homework hasn't " +
+                    'been filled in yet. Complete your answers and push again.',
+              ],
+            };
+            // ---------------------------------------------------------------------
+
+            const { owner, repo } = context.repo;
+
+            // Reads an .ipynb file's cell source text only (ignores outputs,
+            // execution_count, and metadata, which change just from running a
+            // notebook regardless of whether any answer was actually written).
+            // Returns null if the file is missing, unreadable, or not valid JSON.
+            async function getNotebookSource(path, ref) {
+              try {
+                const res = await github.rest.repos.getContent({ owner, repo, path, ref });
+                if (Array.isArray(res.data) || !res.data.content) return null;
+                const text = Buffer.from(res.data.content, 'base64').toString('utf-8');
+                const nb = JSON.parse(text);
+                return (nb.cells || [])
+                  .map((c) => (Array.isArray(c.source) ? c.source.join('') : c.source || ''))
+                  .join('\n');
+              } catch {
+                return null;
+              }
+            }
+
+            // Reports *why* a file isn't a valid submission, not just whether --
+            // 'template' (touched the template itself), 'wrong-location' (right
+            // shape, wrong folder), 'bad-name' (doesn't match the pattern at all),
+            // or 'valid'. Each maps to a different, specific troubleshooting
+            // message below, since "please remove those changes" is actively
+            // wrong advice for someone whose real submission just has a typo.
+            function classifyFile(filename) {
+              const basename = filename.split('/').pop();
+              if (basename.toLowerCase().startsWith(TEMPLATE_PREFIX.toLowerCase())) return 'template';
+              // Name shape is checked BEFORE location on purpose: "wrong-location"
+              // should only ever fire for a file that genuinely looks like a
+              // homework submission and just landed in the wrong folder. Checking
+              // location first would tell a student ".gitignore needs to be
+              // inside homeworks/", which is nonsense, .gitignore was never
+              // going to be a submission no matter where it lives.
+              if (!NAME_RE.test(basename)) return 'bad-name';
+              if (!filename.startsWith(SUBMISSION_DIR)) return 'wrong-location';
+              return 'valid';
+            }
+
+            function isValidHwName(filename) {
+              return classifyFile(filename) === 'valid';
+            }
+
+            // Adds/removes labels to match `applicable`, returns only the ones
+            // that are newly added this run (so we know what's actually new to
+            // comment about, vs. something already flagged last cycle).
+            // `ignore` lists labels we have no opinion on this cycle (e.g. the
+            // content check couldn't run) -- those are left exactly as they
+            // are, neither added nor removed.
+            async function syncLabels(pr, applicable, ignore = []) {
+              const current = pr.labels.map((l) => l.name).filter((n) => OUR_LABELS.includes(n));
+              const toAdd = applicable.filter((l) => !current.includes(l));
+              const toRemove = current.filter((l) => !applicable.includes(l) && !ignore.includes(l));
+
+              if (toRemove.length) {
+                console.log(`  #${pr.number}: removing ${toRemove.join(', ')} (resolved)`);
+                if (!DRY_RUN) {
+                  for (const name of toRemove) {
+                    await github.rest.issues
+                      .removeLabel({ owner, repo, issue_number: pr.number, name })
+                      .catch(() => {});
+                  }
+                }
+              }
+              return toAdd;
+            }
+
+            async function requestChanges(pr, newLabels, reasonArgs) {
+              const body = newLabels
+                .flatMap((l) => REASONS[l](reasonArgs[l]).map((line) => `- ${line}`))
+                .join('\n');
+              console.log(`  #${pr.number}: flagging ${newLabels.join(', ')}`);
+              if (DRY_RUN) {
+                console.log(`  #${pr.number}: [dry run] would request changes:\n${body}`);
+                return;
+              }
+              await github.rest.issues.addLabels({ owner, repo, issue_number: pr.number, labels: newLabels });
+              await github.rest.pulls.createReview({
+                owner,
+                repo,
+                pull_number: pr.number,
+                event: 'REQUEST_CHANGES',
+                body,
+              });
+            }
+
+            async function evaluatePR(prNumber) {
+              try {
+                let pr = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data;
+
+                if (pr.draft) return;
+
+                // Only touch PRs from an actual fork (students, who don't have
+                // write access). Instructors/collaborators work on branches
+                // within this same repo -- head.repo and base.repo will match --
+                // and that's course content development, not a homework
+                // submission, regardless of what files it touches or whether
+                // it's conflicted. Leave those completely alone.
+                // (head.repo can be null if the source fork was since deleted;
+                // that's still a former fork, so don't treat null as same-repo.)
+                const sameRepo = pr.head.repo && pr.head.repo.full_name === pr.base.repo.full_name;
+                if (sameRepo) {
+                  console.log(`  #${pr.number}: same-repo PR, not a fork submission, leaving alone`);
+                  return;
+                }
+
+                // GitHub computes this async and can return null while it's
+                // running, especially the very first time anyone's queried a
+                // given PR (e.g. a large pre-existing backlog this workflow
+                // has never looked at before). Give it a few short chances to
+                // finish within this run -- re-fetching is what actually
+                // triggers/checks the job, just waiting doesn't -- before
+                // falling back to letting the next run pick it up.
+                for (let attempt = 1; pr.mergeable === null && attempt < 3; attempt++) {
+                  await new Promise((resolve) => setTimeout(resolve, 3000));
+                  pr = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data;
+                }
+
+                if (pr.mergeable === null) {
+                  console.log(`  #${pr.number}: mergeable status still computing after retries, skipping this cycle`);
+                  return;
+                }
+
+                const files = await github.paginate(github.rest.pulls.listFiles, {
+                  owner,
+                  repo,
+                  pull_number: pr.number,
+                  per_page: 100,
+                });
+
+                const matching = files.filter((f) => isValidHwName(f.filename));
+                const nonMatching = files.filter((f) => !isValidHwName(f.filename));
+
+                const applicable = [];
+                const reasonArgs = {};
+
+                if (pr.mergeable === false) applicable.push('bug');
+                if (nonMatching.length) {
+                  applicable.push('invalid');
+                  reasonArgs.invalid = nonMatching.map((f) => f.filename);
+                }
+                if (matching.length > 1) {
+                  applicable.push('duplicate');
+                  reasonArgs.duplicate = matching.map((f) => f.filename);
+                }
+
+                // Only meaningful to check content when there's exactly one
+                // valid homework file and nothing else was touched.
+                let questionUndetermined = false;
+                if (matching.length === 1 && nonMatching.length === 0) {
+                  const basename = matching[0].filename.split('/').pop();
+                  const [, week, suffix] = basename.match(NAME_RE);
+                  // New convention (_exercise): template always lives in the
+                  // week-numbered folder itself, regardless of whether the
+                  // student's own copy landed there or in homeworks/.
+                  // Old convention (_HW or no suffix): unchanged, homeworks/.
+                  const templatePath =
+                    suffix && suffix.toLowerCase() === '_exercise'
+                      ? `Week-${week}/DONT_EDIT_MAKE_COPY_week_${week}_exercise.ipynb`
+                      : `${SUBMISSION_DIR}DONT_EDIT_MAKE_COPY_Week_${week}_HW.ipynb`;
+
+                  const templateSrc = await getNotebookSource(templatePath, pr.base.ref);
+                  const submissionSrc = await getNotebookSource(matching[0].filename, pr.head.sha);
+
+                  if (submissionSrc === null) {
+                    // Genuinely can't read a file we just saw listed on the PR --
+                    // rare and almost certainly transient. Leave 'question'
+                    // untouched rather than guessing; bug/duplicate/invalid
+                    // (already computed above) still apply normally below.
+                    console.log(`  #${pr.number}: couldn't read the submitted notebook this cycle, leaving content check for next run`);
+                    questionUndetermined = true;
+                  } else if (templateSrc === null || templateSrc.trim() === submissionSrc.trim()) {
+                    // Missing/unreadable template (e.g. a bad week number) fails
+                    // closed into the same bucket as "not filled in" -- we can't
+                    // verify it either way, so it doesn't get to pass. Track
+                    // which of the two it actually was so the comment can say
+                    // something specific instead of guessing.
+                    applicable.push('question');
+                    reasonArgs.question = templateSrc === null ? 'template-missing' : 'blank';
+                  }
+                }
+
+                const ignoreForSync = questionUndetermined ? ['question'] : [];
+                const newLabels = await syncLabels(pr, applicable, ignoreForSync);
+                if (newLabels.length) {
+                  await requestChanges(pr, newLabels, reasonArgs);
+                  return;
+                }
+
+                if (questionUndetermined) {
+                  if (applicable.length === 0) {
+                    console.log(`  #${pr.number}: content unverified this cycle, not merging yet`);
+                  }
+                  return;
+                }
+
+                if (applicable.length === 0) {
+                  console.log(`  #${pr.number}: all checks passed, merging`);
+                  if (!DRY_RUN) {
+                    await github.rest.pulls
+                      .merge({
+                        owner,
+                        repo,
+                        pull_number: pr.number,
+                        merge_method: MERGE_METHOD,
+                        sha: pr.head.sha, // guards against merging a commit newer than what we just checked
+                      })
+                      .catch((err) => console.log(`  #${pr.number}: merge failed - ${err.message}`));
+                  }
+                }
+              } catch (err) {
+                console.log(`  #${prNumber}: unexpected error, skipping - ${err.message}`);
+              }
+            }
+
+            if (context.eventName === 'pull_request_target') {
+              // Fast path: react to just the PR that triggered this run.
+              const prNumber = context.payload.pull_request.number;
+              console.log(`Evaluating PR #${prNumber} (${context.payload.action})`);
+              await evaluatePR(prNumber);
+            } else {
+              // Backstop path (schedule or manual dispatch): sweep every open
+              // PR. Catches anything the event path missed -- a mergeable
+              // check that was still computing, or PRs opened before this
+              // workflow existed, which never fire a pull_request_target
+              // event on their own.
+              const prs = await github.paginate(github.rest.pulls.list, {
+                owner,
+                repo,
+                state: 'open',
+                per_page: 100,
+              });
+              console.log(`Backstop sweep: evaluating ${prs.length} open PR(s)${DRY_RUN ? ' [DRY RUN]' : ''}`);
+              for (const prSummary of prs) {
+                await evaluatePR(prSummary.number);
+              }
+            }
