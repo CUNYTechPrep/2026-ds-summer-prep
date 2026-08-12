@@ -170,6 +170,29 @@ jobs:
               }
             }
 
+            // Don't assume the student's chosen suffix (_HW vs _exercise) tells
+            // us which era's template convention applies to their week -- a
+            // student can and does write _HW out of habit for a week that's
+            // actually moved to the newer convention, and vice versa. Both
+            // suffix styles are meant to work everywhere; try both plausible
+            // template locations for the given week number and use whichever
+            // one actually exists.
+            async function findTemplate(week, baseRef) {
+              const padded = week.padStart(2, '0');
+              // Set dedupes automatically when week is already 2+ digits, so
+              // this doesn't double-fetch the same path in that case.
+              const candidates = new Set([
+                `${SUBMISSION_DIR}DONT_EDIT_MAKE_COPY_Week_${week}_HW.ipynb`,
+                `Week-${week}/DONT_EDIT_MAKE_COPY_week_${week}_exercise.ipynb`,
+                `Week-${padded}/DONT_EDIT_MAKE_COPY_week_${padded}_exercise.ipynb`,
+              ]);
+              for (const path of candidates) {
+                const src = await getNotebookSource(path, baseRef);
+                if (src !== null) return src;
+              }
+              return null;
+            }
+
             // Reports *why* a file isn't a valid submission, not just whether --
             // 'template' (touched the template itself), 'wrong-location' (right
             // shape, wrong folder), 'bad-name' (doesn't match the pattern at all),
@@ -302,17 +325,9 @@ jobs:
                 let questionUndetermined = false;
                 if (matching.length === 1 && nonMatching.length === 0) {
                   const basename = matching[0].filename.split('/').pop();
-                  const [, week, suffix] = basename.match(NAME_RE);
-                  // New convention (_exercise): template always lives in the
-                  // week-numbered folder itself, regardless of whether the
-                  // student's own copy landed there or in homeworks/.
-                  // Old convention (_HW or no suffix): unchanged, homeworks/.
-                  const templatePath =
-                    suffix && suffix.toLowerCase() === '_exercise'
-                      ? `Week-${week}/DONT_EDIT_MAKE_COPY_week_${week}_exercise.ipynb`
-                      : `${SUBMISSION_DIR}DONT_EDIT_MAKE_COPY_Week_${week}_HW.ipynb`;
+                  const [, week] = basename.match(NAME_RE);
 
-                  const templateSrc = await getNotebookSource(templatePath, pr.base.ref);
+                  const templateSrc = await findTemplate(week, pr.base.ref);
                   const submissionSrc = await getNotebookSource(matching[0].filename, pr.head.sha);
 
                   if (submissionSrc === null) {
