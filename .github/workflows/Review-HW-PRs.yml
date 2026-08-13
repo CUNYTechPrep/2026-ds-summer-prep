@@ -286,7 +286,7 @@ jobs:
               try {
                 let pr = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data;
 
-                if (pr.draft) return;
+                if (pr.draft) return 'draft';
 
                 // Only touch PRs from an actual fork (students, who don't have
                 // write access). Instructors/collaborators work on branches
@@ -299,7 +299,7 @@ jobs:
                 const sameRepo = pr.head.repo && pr.head.repo.full_name === pr.base.repo.full_name;
                 if (sameRepo) {
                   console.log(`  #${pr.number}: same-repo PR, not a fork submission, leaving alone`);
-                  return;
+                  return 'same-repo';
                 }
 
                 // GitHub computes this async and can return null while it's
@@ -316,7 +316,7 @@ jobs:
 
                 if (pr.mergeable === null) {
                   console.log(`  #${pr.number}: mergeable status still computing after retries, skipping this cycle`);
-                  return;
+                  return 'pending';
                 }
 
                 const files = await github.paginate(github.rest.pulls.listFiles, {
@@ -374,21 +374,22 @@ jobs:
                 const newLabels = await syncLabels(pr, applicable, ignoreForSync);
                 if (newLabels.length) {
                   await requestChanges(pr, newLabels, reasonArgs);
-                  return;
+                  return 'flagged';
                 }
 
                 if (questionUndetermined) {
                   if (applicable.length === 0) {
                     console.log(`  #${pr.number}: content unverified this cycle, not merging yet`);
+                    return 'unverified';
                   }
-                  return;
+                  return 'unchanged';
                 }
 
                 if (applicable.length === 0) {
                   console.log(`  #${pr.number}: all checks passed, merging`);
                   if (!DRY_RUN) {
                     await dismissStaleReviews(pr);
-                    await github.rest.pulls
+                    return await github.rest.pulls
                       .merge({
                         owner,
                         repo,
@@ -396,6 +397,7 @@ jobs:
                         merge_method: MERGE_METHOD,
                         sha: pr.head.sha, // guards against merging a commit newer than what we just checked
                       })
+                      .then(() => 'merged')
                       .catch((err) => {
                         // Octokit errors carry more detail than err.message alone --
                         // status and the API's own specific reason, sometimes a docs
@@ -406,19 +408,56 @@ jobs:
                         console.log(`  #${pr.number}: merge failed [${err.status || '?'}] - ${err.message}`);
                         if (apiMessage && apiMessage !== err.message) console.log(`    reason: ${apiMessage}`);
                         if (docsUrl) console.log(`    docs: ${docsUrl}`);
+                        return 'merge-failed';
                       });
                   }
+                  return 'dry-run-pass';
                 }
+
+                // applicable.length > 0 but nothing new -- a PR that's still sitting
+                // on a real, previously-flagged problem the student hasn't fixed.
+                // This is the case that used to be completely silent (by design, so
+                // the bot doesn't repeat-comment every cycle) and made "73 PRs
+                // correctly waiting on students" indistinguishable in the log from
+                // "73 PRs the bot quietly stopped handling." Tagged, not logged --
+                // the per-PR silence is still intentional, this only feeds the
+                // one-line sweep summary below.
+                return 'unchanged';
               } catch (err) {
                 console.log(`  #${prNumber}: unexpected error, skipping - ${err.message}`);
+                return 'error';
               }
+            }
+
+            // One-line tally so a sweep's outcome is legible without counting labels
+            // by hand -- prints only the categories that actually occurred. Order is
+            // roughly "most worth noticing first": real actions and failures before
+            // routine skips.
+            function summarizeOutcomes(outcomes) {
+              const order = [
+                'merged',
+                'merge-failed',
+                'flagged',
+                'unverified',
+                'unchanged',
+                'pending',
+                'same-repo',
+                'draft',
+                'dry-run-pass',
+                'error',
+              ];
+              const counts = {};
+              for (const o of outcomes) counts[o] = (counts[o] || 0) + 1;
+              const parts = order.filter((k) => counts[k]).map((k) => `${counts[k]} ${k}`);
+              return `${parts.join(', ')} (${outcomes.length} total)`;
             }
 
             if (context.eventName === 'pull_request_target') {
               // Fast path: react to just the PR that triggered this run.
               const prNumber = context.payload.pull_request.number;
               console.log(`Evaluating PR #${prNumber} (${context.payload.action})`);
-              await evaluatePR(prNumber);
+              const outcome = await evaluatePR(prNumber);
+              console.log(`Summary: ${summarizeOutcomes([outcome])}`);
             } else {
               // Backstop path (schedule or manual dispatch): sweep every open
               // PR. Catches anything the event path missed -- a mergeable
@@ -432,7 +471,9 @@ jobs:
                 per_page: 100,
               });
               console.log(`Backstop sweep: evaluating ${prs.length} open PR(s)${DRY_RUN ? ' [DRY RUN]' : ''}`);
+              const outcomes = [];
               for (const prSummary of prs) {
-                await evaluatePR(prSummary.number);
+                outcomes.push(await evaluatePR(prSummary.number));
               }
+              console.log(`Summary: ${summarizeOutcomes(outcomes)}`);
             }
