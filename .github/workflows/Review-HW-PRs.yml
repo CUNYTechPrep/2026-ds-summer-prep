@@ -16,11 +16,15 @@
 #                is removed on the next run.
 #
 # Naming conventions accepted (two eras, both currently in use). Submissions
-# always go in homeworks/, only the template's location differs:
-#   old:  homeworks/{initials OR Firstname_Lastname}_Week_{N}_HW.ipynb
+# always go in homeworks/, only the template's location differs.
+# To avoid collisions in a single shared repo, the prefix must be unique to
+# each student. Bare initials are rejected. Use a full name, a CUNY/Student ID,
+# or another stable unique identifier.
+#   old:  homeworks/{unique_prefix}_Week_{N}_HW.ipynb
 #         template: homeworks/DONT_EDIT_MAKE_COPY_Week_{N}_HW.ipynb
-#   new:  homeworks/{initials OR Firstname_Lastname}_week_{NN}_exercise.ipynb
+#   new:  homeworks/{unique_prefix}_week_{NN}_exercise.ipynb
 #         template: Week-{NN}/DONT_EDIT_MAKE_COPY_week_{NN}_exercise.ipynb
+# Examples: faizan_khan_week_3_hw.ipynb, student_12345678_week_03_exercise.ipynb
 # A trailing "copy" (as "_copy" or " copy", however Jupyter/the OS happened to
 # name the duplicate) is tolerated in either era, harmless, doesn't create
 # any ambiguity about which file or week it is.
@@ -89,15 +93,16 @@ jobs:
 
             // ---- tunables -----------------------------------------------------
             // Two conventions currently in use, both accepted:
-            //   old: {name}_Week_N_HW.ipynb        (homeworks/, template also there)
-            //   new: {name}_week_NN_exercise.ipynb (homeworks/ or Week-NN/, template
+            //   old: {prefix}_Week_N_HW.ipynb        (homeworks/, template also there)
+            //   new: {prefix}_week_NN_exercise.ipynb (homeworks/ or Week-NN/, template
             //        always lives in Week-NN/ regardless of where the student put
             //        their own copy)
-            // {name} is 2-4 letter initials OR one-or-more Firstname_Lastname-style
-            // segments. The underscore right before the week number is optional too
-            // (Week1 as well as Week_1), same reasoning as making _HW optional:
-            // harmless, doesn't create any ambiguity.
-            const NAME_RE = /^[A-Za-z]+(?:_[A-Za-z]+)*_Week_?(\d+)(_HW|_exercise)?(?:[ _]copy)?\.ipynb$/i;
+            // {prefix} must be unique to each student. Bare initials are rejected
+            // to prevent collisions in a shared repo. Use a full name, CUNY ID,
+            // or another stable unique identifier. The underscore right before the
+            // week number is optional too (Week1 as well as Week_1), same reasoning
+            // as making _HW optional: harmless, doesn't create ambiguity.
+            const NAME_RE = /^(?:(?:[A-Za-z]+_[A-Za-z]+)|(?:[A-Za-z]+[A-Za-z0-9]*_[A-Za-z0-9]*[0-9][A-Za-z0-9]*))_Week_?(\d+)(_HW|_exercise)?(?:[ _]copy)?\.ipynb$/i;
             const SUBMISSION_DIR = 'homeworks/';
             // Matches the template regardless of era -- old and new both start with
             // this, only the casing of "week" and what follows differs. Checked
