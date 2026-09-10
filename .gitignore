@@ -6,6 +6,8 @@ __pycache__/
 # C extensions
 *.so
 
+.vscode
+
 # Distribution / packaging
 .Python
 build/
@@ -53,7 +55,8 @@ docs/_build/
 target/
 
 # Jupyter Notebook
-.ipynb_checkpoints
+.ipynb_checkpoints/
+.jupyter/
 
 # IPython
 profile_default/
@@ -67,7 +70,7 @@ celerybeat-schedule
 
 # Environments
 .env
-.venv
+.venv/
 env/
 venv/
 ENV/
@@ -85,8 +88,9 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
-# VS Code
-.vscode/
+# VS Code (keep shared recommendations)
+.vscode/*
+!.vscode/extensions.json
 
 # PyCharm
 .idea/
