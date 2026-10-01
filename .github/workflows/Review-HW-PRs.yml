@@ -16,11 +16,15 @@
 #                is removed on the next run.
 #
 # Naming conventions accepted (two eras, both currently in use). Submissions
-# always go in homeworks/, only the template's location differs:
-#   old:  homeworks/{initials OR Firstname_Lastname}_Week_{N}_HW.ipynb
+# always go in homeworks/, only the template's location differs.
+# To avoid collisions in a single shared repo, the prefix must be unique to
+# each student. Bare initials are rejected. Use a full name, a CUNY/Student ID,
+# or another stable unique identifier.
+#   old:  homeworks/{unique_prefix}_Week_{N}_HW.ipynb
 #         template: homeworks/DONT_EDIT_MAKE_COPY_Week_{N}_HW.ipynb
-#   new:  homeworks/{initials OR Firstname_Lastname}_week_{NN}_exercise.ipynb
+#   new:  homeworks/{unique_prefix}_week_{NN}_exercise.ipynb
 #         template: Week-{NN}/DONT_EDIT_MAKE_COPY_week_{NN}_exercise.ipynb
+# Examples: faizan_khan_week_3_hw.ipynb, student_12345678_week_03_exercise.ipynb
 # A trailing "copy" (as "_copy" or " copy", however Jupyter/the OS happened to
 # name the duplicate) is tolerated in either era, harmless, doesn't create
 # any ambiguity about which file or week it is.
@@ -89,15 +93,16 @@ jobs:
 
             // ---- tunables -----------------------------------------------------
             // Two conventions currently in use, both accepted:
-            //   old: {name}_Week_N_HW.ipynb        (homeworks/, template also there)
-            //   new: {name}_week_NN_exercise.ipynb (homeworks/ or Week-NN/, template
+            //   old: {prefix}_Week_N_HW.ipynb        (homeworks/, template also there)
+            //   new: {prefix}_week_NN_exercise.ipynb (homeworks/ or Week-NN/, template
             //        always lives in Week-NN/ regardless of where the student put
             //        their own copy)
-            // {name} is 2-4 letter initials OR one-or-more Firstname_Lastname-style
-            // segments. The underscore right before the week number is optional too
-            // (Week1 as well as Week_1), same reasoning as making _HW optional:
-            // harmless, doesn't create any ambiguity.
-            const NAME_RE = /^[A-Za-z]+(?:_[A-Za-z]+)*_Week_?(\d+)(_HW|_exercise)?(?:[ _]copy)?\.ipynb$/i;
+            // {prefix} must be unique to each student. Bare initials are rejected
+            // to prevent collisions in a shared repo. Use a full name, CUNY ID,
+            // or another stable unique identifier. The underscore right before the
+            // week number is optional too (Week1 as well as Week_1), same reasoning
+            // as making _HW optional: harmless, doesn't create ambiguity.
+            const NAME_RE = /^(?:(?:[A-Za-z]+_[A-Za-z]+)|(?:[A-Za-z]+[A-Za-z0-9]*_[A-Za-z0-9]*[0-9][A-Za-z0-9]*))_Week_?(\d+)(_HW|_exercise)?(?:[ _]copy)?\.ipynb$/i;
             const SUBMISSION_DIR = 'homeworks/';
             // Matches the template regardless of era -- old and new both start with
             // this, only the casing of "week" and what follows differs. Checked
@@ -170,6 +175,29 @@ jobs:
               }
             }
 
+            // Don't assume the student's chosen suffix (_HW vs _exercise) tells
+            // us which era's template convention applies to their week -- a
+            // student can and does write _HW out of habit for a week that's
+            // actually moved to the newer convention, and vice versa. Both
+            // suffix styles are meant to work everywhere; try both plausible
+            // template locations for the given week number and use whichever
+            // one actually exists.
+            async function findTemplate(week, baseRef) {
+              const padded = week.padStart(2, '0');
+              // Set dedupes automatically when week is already 2+ digits, so
+              // this doesn't double-fetch the same path in that case.
+              const candidates = new Set([
+                `${SUBMISSION_DIR}DONT_EDIT_MAKE_COPY_Week_${week}_HW.ipynb`,
+                `Week-${week}/DONT_EDIT_MAKE_COPY_week_${week}_exercise.ipynb`,
+                `Week-${padded}/DONT_EDIT_MAKE_COPY_week_${padded}_exercise.ipynb`,
+              ]);
+              for (const path of candidates) {
+                const src = await getNotebookSource(path, baseRef);
+                if (src !== null) return src;
+              }
+              return null;
+            }
+
             // Reports *why* a file isn't a valid submission, not just whether --
             // 'template' (touched the template itself), 'wrong-location' (right
             // shape, wrong folder), 'bad-name' (doesn't match the pattern at all),
@@ -237,11 +265,33 @@ jobs:
               });
             }
 
+            // Sync has only ever updated labels, never the review itself, so a
+            // PR that once failed and got a REQUEST_CHANGES review keeps that
+            // review sitting there even after the label's removed. If main
+            // requires reviews to be resolved before merging, that stale review
+            // blocks the merge and the token can't clear it by approving (that's
+            // permanently disallowed), so dismiss it explicitly instead.
+            async function dismissStaleReviews(pr) {
+              const { data: reviews } = await github.rest.pulls.listReviews({ owner, repo, pull_number: pr.number });
+              const stale = reviews.filter((r) => r.user?.login === 'github-actions[bot]' && r.state === 'CHANGES_REQUESTED');
+              for (const review of stale) {
+                await github.rest.pulls
+                  .dismissReview({
+                    owner,
+                    repo,
+                    pull_number: pr.number,
+                    review_id: review.id,
+                    message: 'All checks pass now, clearing this so the PR can merge.',
+                  })
+                  .catch((err) => console.log(`  #${pr.number}: couldn't dismiss stale review - ${err.message}`));
+              }
+            }
+
             async function evaluatePR(prNumber) {
               try {
                 let pr = (await github.rest.pulls.get({ owner, repo, pull_number: prNumber })).data;
 
-                if (pr.draft) return;
+                if (pr.draft) return 'draft';
 
                 // Only touch PRs from an actual fork (students, who don't have
                 // write access). Instructors/collaborators work on branches
@@ -254,7 +304,7 @@ jobs:
                 const sameRepo = pr.head.repo && pr.head.repo.full_name === pr.base.repo.full_name;
                 if (sameRepo) {
                   console.log(`  #${pr.number}: same-repo PR, not a fork submission, leaving alone`);
-                  return;
+                  return 'same-repo';
                 }
 
                 // GitHub computes this async and can return null while it's
@@ -271,7 +321,7 @@ jobs:
 
                 if (pr.mergeable === null) {
                   console.log(`  #${pr.number}: mergeable status still computing after retries, skipping this cycle`);
-                  return;
+                  return 'pending';
                 }
 
                 const files = await github.paginate(github.rest.pulls.listFiles, {
@@ -302,17 +352,9 @@ jobs:
                 let questionUndetermined = false;
                 if (matching.length === 1 && nonMatching.length === 0) {
                   const basename = matching[0].filename.split('/').pop();
-                  const [, week, suffix] = basename.match(NAME_RE);
-                  // New convention (_exercise): template always lives in the
-                  // week-numbered folder itself, regardless of whether the
-                  // student's own copy landed there or in homeworks/.
-                  // Old convention (_HW or no suffix): unchanged, homeworks/.
-                  const templatePath =
-                    suffix && suffix.toLowerCase() === '_exercise'
-                      ? `Week-${week}/DONT_EDIT_MAKE_COPY_week_${week}_exercise.ipynb`
-                      : `${SUBMISSION_DIR}DONT_EDIT_MAKE_COPY_Week_${week}_HW.ipynb`;
+                  const [, week] = basename.match(NAME_RE);
 
-                  const templateSrc = await getNotebookSource(templatePath, pr.base.ref);
+                  const templateSrc = await findTemplate(week, pr.base.ref);
                   const submissionSrc = await getNotebookSource(matching[0].filename, pr.head.sha);
 
                   if (submissionSrc === null) {
@@ -337,20 +379,22 @@ jobs:
                 const newLabels = await syncLabels(pr, applicable, ignoreForSync);
                 if (newLabels.length) {
                   await requestChanges(pr, newLabels, reasonArgs);
-                  return;
+                  return 'flagged';
                 }
 
                 if (questionUndetermined) {
                   if (applicable.length === 0) {
                     console.log(`  #${pr.number}: content unverified this cycle, not merging yet`);
+                    return 'unverified';
                   }
-                  return;
+                  return 'unchanged';
                 }
 
                 if (applicable.length === 0) {
                   console.log(`  #${pr.number}: all checks passed, merging`);
                   if (!DRY_RUN) {
-                    await github.rest.pulls
+                    await dismissStaleReviews(pr);
+                    return await github.rest.pulls
                       .merge({
                         owner,
                         repo,
@@ -358,19 +402,67 @@ jobs:
                         merge_method: MERGE_METHOD,
                         sha: pr.head.sha, // guards against merging a commit newer than what we just checked
                       })
-                      .catch((err) => console.log(`  #${pr.number}: merge failed - ${err.message}`));
+                      .then(() => 'merged')
+                      .catch((err) => {
+                        // Octokit errors carry more detail than err.message alone --
+                        // status and the API's own specific reason, sometimes a docs
+                        // link. Log all of it so a failure is diagnosable straight
+                        // from this log, not guessed at from unrelated forum posts.
+                        const apiMessage = err.response?.data?.message;
+                        const docsUrl = err.response?.data?.documentation_url;
+                        console.log(`  #${pr.number}: merge failed [${err.status || '?'}] - ${err.message}`);
+                        if (apiMessage && apiMessage !== err.message) console.log(`    reason: ${apiMessage}`);
+                        if (docsUrl) console.log(`    docs: ${docsUrl}`);
+                        return 'merge-failed';
+                      });
                   }
+                  return 'dry-run-pass';
                 }
+
+                // applicable.length > 0 but nothing new -- a PR that's still sitting
+                // on a real, previously-flagged problem the student hasn't fixed.
+                // This is the case that used to be completely silent (by design, so
+                // the bot doesn't repeat-comment every cycle) and made "73 PRs
+                // correctly waiting on students" indistinguishable in the log from
+                // "73 PRs the bot quietly stopped handling." Tagged, not logged --
+                // the per-PR silence is still intentional, this only feeds the
+                // one-line sweep summary below.
+                return 'unchanged';
               } catch (err) {
                 console.log(`  #${prNumber}: unexpected error, skipping - ${err.message}`);
+                return 'error';
               }
+            }
+
+            // One-line tally so a sweep's outcome is legible without counting labels
+            // by hand -- prints only the categories that actually occurred. Order is
+            // roughly "most worth noticing first": real actions and failures before
+            // routine skips.
+            function summarizeOutcomes(outcomes) {
+              const order = [
+                'merged',
+                'merge-failed',
+                'flagged',
+                'unverified',
+                'unchanged',
+                'pending',
+                'same-repo',
+                'draft',
+                'dry-run-pass',
+                'error',
+              ];
+              const counts = {};
+              for (const o of outcomes) counts[o] = (counts[o] || 0) + 1;
+              const parts = order.filter((k) => counts[k]).map((k) => `${counts[k]} ${k}`);
+              return `${parts.join(', ')} (${outcomes.length} total)`;
             }
 
             if (context.eventName === 'pull_request_target') {
               // Fast path: react to just the PR that triggered this run.
               const prNumber = context.payload.pull_request.number;
               console.log(`Evaluating PR #${prNumber} (${context.payload.action})`);
-              await evaluatePR(prNumber);
+              const outcome = await evaluatePR(prNumber);
+              console.log(`Summary: ${summarizeOutcomes([outcome])}`);
             } else {
               // Backstop path (schedule or manual dispatch): sweep every open
               // PR. Catches anything the event path missed -- a mergeable
@@ -384,7 +476,9 @@ jobs:
                 per_page: 100,
               });
               console.log(`Backstop sweep: evaluating ${prs.length} open PR(s)${DRY_RUN ? ' [DRY RUN]' : ''}`);
+              const outcomes = [];
               for (const prSummary of prs) {
-                await evaluatePR(prSummary.number);
+                outcomes.push(await evaluatePR(prSummary.number));
               }
+              console.log(`Summary: ${summarizeOutcomes(outcomes)}`);
             }

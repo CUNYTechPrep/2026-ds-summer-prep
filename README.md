@@ -14,3 +14,17 @@ Please have your full name, how to pronounce, and photo in Zoom and Slack.
 * Week 02: Thursday 30th - Python Basics, Github, and IDE Ninja Skillz
 * Week 03: Thursday 06th - Beyond Python Basics - Libraries
 * Week 04: Thursday 13th - Advanced Python
+
+## Homework submission policy
+
+- Submit exactly one homework notebook per PR.
+- Do not combine multiple weeks or multiple students' work in one pull request.
+- Copy the template into `homeworks/` and work on the copy, not the original template file.
+- Use a unique filename prefix per student, not just initials. Bare initials are not accepted.
+- Good examples include:
+  - `faizan_khan_week_3_hw.ipynb`
+  - `student_12345678_week_03_exercise.ipynb`
+- A full name, CUNY/student ID, or another stable unique identifier is required in the filename prefix.
+- Avoid names that are too generic or likely to collide across a shared repo.
+- Keep the PR focused on the current week's assignment and avoid unrelated file changes.
+- If a PR is left inactive for too long, it may receive a warning and then be closed automatically by the course bot.

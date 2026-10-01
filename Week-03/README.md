@@ -44,8 +44,8 @@ Your fork already exists from an earlier week, so today's steps are:
 
 4. In the terminal, run `git status` to confirm where you are, then `git checkout week{x}` to move onto your branch.
 
-5. **Don't edit the exercise file directly.** Copy it into `homeworks/`, rename it with your initials (example: `HM_Week_3_HW.ipynb`), and work on the copy.
-6. Stage **only your file**: `git add homeworks/HM_Week_3_HW.ipynb` — not `git add .` (This is the single biggest avoidable cause of merge conflicts).
+5. **Don't edit the exercise file directly.** Copy it into `homeworks/`, rename it with a unique identifier (not just initials), such as `faizan_khan_Week_3_HW.ipynb` or `student_12345678_week_03_exercise.ipynb`, and work on the copy. Bare initials are not accepted.
+6. Stage **only your file**: `git add homeworks/faizan_khan_Week_3_HW.ipynb` — not `git add .` (This is the single biggest avoidable cause of merge conflicts).
 7. Commit the added file with a message: `git commit -m "completed week 3 hw"`
 8. `git push`. First push on a brand-new branch prompts you to set an upstream — accept it, or run `git push --set-upstream origin week{x}`. Either way, this goes to *your fork*, not the class repo.
 
